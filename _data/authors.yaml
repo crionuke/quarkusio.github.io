@@ -323,3 +323,8 @@ mjurc:
   name: "Michal Jurč"
   email: "mjurc@redhat.com"
   job_title: "Senior Software Quality Engineer"
+crionuke:
+  name: "Kirill Byvshev"
+  email: "k@byv.sh"
+  emailhash: "87252ae8358394aadbe46dc59a272a1e"
+  job_title: "Software Engineer at SberTech"

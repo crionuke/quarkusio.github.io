@@ -1,0 +1,171 @@
+---
+layout: post
+title: 'Counter Service redesign with Quarkus framework for Sber technology platform'
+date: 2021-12-24
+tags: user-story
+synopsis: Counter Service redesign with Quarkus framework for Sber technology platform
+author: crionuke
+---
+:imagesdir: /assets/images/posts/sber-counter-service
+
+== Introduction
+
+Hi, quarkusers! I am a software engineer from SberTech. It's a company in Russia that makes a technology platform for
+Sber.
+
+Sber makes the biggest transformation (as I know in Europe) from classic Bank company to IT giant with its own
+ecosystem, which consists of all modern services: video and music streaming, food delivery, e-retail, etc. So, many
+services present in this ecosystem require counters — to numerate business entities, agreements, checks, and etc.
+
+Before I knew about the Quarkus framework we already had implemented such a service for kubernetes/openshift and it was
+based on a typical choice of technologies: JVM, SpringBoot framework and PostgreSQL to persist our counters.
+
+After load testing we prove we are able to process ~2000 requests per second. And this solution satisfied the Bank's
+requirements, but not requirements from the whole ecosystem!
+
+We have to reach a load of no less than 10000 requests per second.
+
+== Analyse
+
+We have been analyzing our service from any directions and detected several issues and limitations:
+
+- Our SpringBoot Application has been starting for about 30 seconds → so there is no chance for dynamic and rapid
+response to load changes;
+- Overwhelming memory consumption → aggressive resource consumption;
+- Threads has been blocked and just waiting for i/o operations → weak effectiveness;
+- PostgreSQL is unable to be horizontal scaled for writing → we should replace PostgreSQL or should be calm to stay
+with limited amount of transactions;
+- Amount of application’s instances has been limited by max_connections of database - application scaling limited by
+database performance;
+- Data storage is a bottleneck in case we have a lot of requests to the same counter → no sense to increase a quantity
+of application instances as transactions form a "queue" and processed one by one.
+
+== Solutions
+
+=== Obvious changes:
+
+- Application has been redesigned to use Quarkus framework and compiled to a native executable by GraalVM with Native
+Image plugin;
+- Imperative approach has been replaced with reactive programming with Mutiny based on event loops;
+- We have decided to leave PostgreSQL at this stage as we have no intentions to add additional technologies except
+those already deployed in Production.
+
+=== Moreover we have changed our simple architecture to a more complex solution with two layers:
+
+image::two-layer-arch.png[]
+
+Front layer:
+
+- PODs are processing all customers incoming requests and there are no any dependent database connections. Therefore
+this layer can be scaled adequately to incoming load and independently of DB;
+- There are processing frames for incoming requests. Frames are limited by size (in amount of requests) and maximum
+delay (in milliseconds);
+- Within a frame each counter has aggregated and calculated overall delta of values;
+- To prepare and perform delta’s requests to Back component for every frame.
+
+Back layer:
+
+- Amount of Back instances are significantly less than Front PODs as exactly one request per frame is being made from
+Front;
+- Back instances scale is based on time frame size and performance of database and not depends on incoming load from
+customers directly;
+- To aggregate all delta’s requests to the same counters from different Front PODs;
+- Within a frame each counter has aggregated and calculated overall delta of values;
+- To use pooled connections for applying transactions to DB.
+
+== Tuning
+
+Due to amended architecture our service has been extended with additional parameters available for tuning:
+
+- front_instances and back_instances - amount of instances for Front and Back components;
+- front_frame_delay and back_frame_delay - maximum delays for frame time on Front and Back (in milliseconds);
+
+Short remarks:
+
+- We are able to increase front_instances to accept additional user requests;
+- We are able to increase back_instances to fully utilize database resources;
+- We are able to increase front_frame_delay to decrease load to Back;
+- We are able to increase back_frame_delay to decrease load to DB.
+
+== Testing
+
+New implementation was tested with a yandex-tank running inside the docker container from a dedicated virtual machine.
+Ammo file for testing consisted of 10 requests to 10 different counters. Service components and PostgreSQL instance
+were run as containers inside the openshift cluster with limits:
+
+- Front/Back: 1000m/512Mi per Pod;
+- PostgreSQL: 4000m/1024Mi;
+
+=== Test 1 (2k rps)
+
+==== Configuration:
+
+- Front (replicas: 2), Back (replicas: 2);
+- Tank (instances: 2000, schedule: const(2000, 1m).
+
+==== Results:
+
+- Average response time (95th percentile): 28ms
+- Overall CPU usage: ~400m
+- Total memory consumption: ~500Mi
+
+==== Quantiles:
+
+image::test-1-quantiles.png[]
+
+==== Cumulative quantiles:
+
+image::test-1-table.png[]
+
+
+=== Test 2 (10k rps)
+
+==== Configuration:
+
+- Front (replicas: 3), Back (replicas: 2);
+- Tank (instances: 10000, schedule: const(10000, 1m).
+
+==== Results:
+
+- Average response time (95th percentile): 29ms
+- Overall CPU usage: ~700m
+- Total memory consumption: ~1000Mi
+
+==== Quantiles:
+
+image::test-2-quantiles.png[]
+
+==== Cumulative quantiles:
+
+image::test-2-table.png[]
+
+
+=== Test 3 (40k rps)
+
+==== Configuration:
+
+- Front (replicas: 12), Back (replicas: 3);
+- Tank (instances: 20000, schedule: const(40000, 1m).
+
+==== Results:
+
+- Average response time (95th percentile): 31ms
+- Overall CPU usage: ~2000m
+- Total memory consumption: ~2000Mi
+
+==== Quantiles:
+
+image::test-3-quantiles.png[]
+
+==== Cumulative quantiles:
+
+image::test-3-table.png[]
+
+== Results
+
+As a result of this redesign we achieved new target performance at 10000 requests per second and have confirmed
+availability to endure up to 40000 requests per second. Now requests latency almost does not depend on incoming load
+and can be regulated by size of time frames. So service based on two layer architecture implemented on the Quarkus
+framework satisfy not only Bank's requirements, but requirements from the whole ecosystem!
+
+Happy New Coding!
